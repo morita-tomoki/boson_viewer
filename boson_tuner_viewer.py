@@ -35,8 +35,8 @@ Keys:
 
   LUT:
     - e: enable LUT    d: disable LUT
-    - w: WHITEHOT  b: BLACKHOT  i: IRONBOW  r: RAINBOW
-    - g: GRADEDFIRE h: HOTTEST  a: ARCTIC   l: LAVA   o: GLOBOW
+    - w: WHITEHOT  b: BLACKHOT  i: IRONBOW  R: RAINBOW
+    - G: GRADEDFIRE h: HOTTEST  A: ARCTIC   l: LAVA   o: GLOBOW
 
 Notes:
   - If your UVC stream is raw IR16 and colorized on the PC, camera-side LUT
@@ -108,6 +108,10 @@ class RoiSelector:
     def on_mouse(self, event, x, y, flags, param):
         if not self.active:
             return
+        if event == cv2.EVENT_RBUTTONDOWN:
+            # Right-click to cancel selection
+            self.cancel()
+            return
         if event == cv2.EVENT_LBUTTONDOWN:
             self.dragging = True
             self.start = (x, y)
@@ -145,6 +149,7 @@ def main() -> None:
     parser.add_argument("--codec", type=str, default="mp4v", help="FourCC codec (default: mp4v; fallback MJPG if open fails)")
     parser.add_argument("--fps", type=float, default=30.0, help="Fallback FPS if CAP reports 0")
     parser.add_argument("--record-size", type=str, default=None, help="Force recording size WxH (e.g., 640x512). Default: first raw frame size")
+    parser.add_argument("--crop-telemetry", choices=["on","off"], default="on", help="Crop extra telemetry lines in UVC frames if detected (e.g., 514->512)")
     args = parser.parse_args()
 
     # Import SDK
@@ -292,6 +297,7 @@ def main() -> None:
     rec_start_time: Optional[float] = None
     burn_overlay = args.record_overlay == "on"
     record_size: Optional[Tuple[int, int]] = None  # (w,h)
+    writer_size: Optional[Tuple[int, int]] = None  # actual VideoWriter size (w,h)
 
     # Parse forced record size if provided
     if args.record_size:
@@ -343,7 +349,7 @@ def main() -> None:
         return u8
 
     def start_recording(sample_frame):
-        nonlocal recording, rec_writer, rec_start_time
+        nonlocal recording, rec_writer, rec_start_time, writer_size
         if recording:
             return True
         # Decide output path and codec
@@ -380,6 +386,7 @@ def main() -> None:
             print(f"[INFO] Recording to {out_path} @ {fps:.2f} FPS, size={record_size_local[0]}x{record_size_local[1]}")
         rec_writer = writer
         rec_start_time = time.time()
+        writer_size = record_size_local
         recording = True
         return True
 
@@ -617,6 +624,15 @@ def main() -> None:
                 print("[WARN] Empty frame; continuing...")
                 continue
 
+            # Optional crop of appended telemetry rows (e.g., 514 -> 512)
+            if args.crop_telemetry == "on":
+                try:
+                    h_chk = frame.shape[0]
+                    if h_chk in (514, 258, 1026):
+                        frame = frame[: h_chk - 2, ...]
+                except Exception:
+                    pass
+
             # Debug: print capture size when changed
             try:
                 h0, w0 = frame.shape[:2]
@@ -660,11 +676,8 @@ def main() -> None:
                 rec_src = vis if burn_overlay else raw
                 rec_bgr = to_bgr_u8(rec_src)
                 if rec_bgr is not None:
-                    # Resize to locked record_size if needed
-                    if record_size is not None:
-                        target_sz = record_size
-                    else:
-                        target_sz = (rec_bgr.shape[1], rec_bgr.shape[0])
+                    # Resize to locked writer_size if needed
+                    target_sz = writer_size if writer_size is not None else (rec_bgr.shape[1], rec_bgr.shape[0])
                     if (rec_bgr.shape[1], rec_bgr.shape[0]) != target_sz:
                         rec_bgr = cv2.resize(rec_bgr, target_sz, interpolation=cv2.INTER_AREA)
                     rec_writer.write(rec_bgr)
